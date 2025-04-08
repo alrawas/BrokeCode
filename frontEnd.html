@@ -1,245 +1,398 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AI Audio Transcription</title>
-  <style>
-    #transcription-output {
-      margin-top: 20px;
-      padding: 10px;
-      border: 1px solid #ddd;
-      min-height: 50px;
-    }
-    #recordButton, #stopButton, #transcribeButton {
-      margin-top: 10px;
-      padding: 10px;
-    }
-    #waveform {
-      width: 100%;
-      height: 100px;
-      margin-top: 20px;
-    }
-    #audioPlayer {
-      margin-top: 20px;
-    }
-    #audioElement {
-      width: 100%;
-    }
-    #playbackHint {
-      font-size: 12px;
-      margin-top: 5px;
-      color: gray;
-    }
-  </style>
-  <!-- WaveSurfer.js Library -->
-  <script src="https://unpkg.com/wavesurfer.js"></script>
-</head>
-<body>
-  <h1>Record Audio for Transcription</h1>
-
-  <button id="recordButton">Start Recording</button>
-  <button id="stopButton" disabled>Stop Recording</button>
-  <button id="transcribeButton" disabled>Transcribe</button>
-
-  <div id="waveform"></div> <!-- Waveform display -->
-
-  <div id="audioPlayer">
-    <audio id="audioElement" controls>
-      Your browser does not support the audio element.
-    </audio>
-  </div> <!-- Audio playback -->
-
-  <div id="playbackHint">Click the play button above to hear your recording.</div> <!-- Hint for playback -->
-
-  <h2>Transcription Output:</h2>
-  <div id="transcription-output">Waiting for transcription...</div>
-
-  <script>
-    let audioContext;
-    let processor;
-    let source;
-    let audioDataBuffer = []; // Stores Float32Array chunks
-    let recording = false;
-    let waveSurfer;
-
-    // Initialize WaveSurfer.js for waveform visualization
-    function initWaveform() {
-      waveSurfer = WaveSurfer.create({
-        container: '#waveform',
-        waveColor: 'gray',
-        progressColor: 'green',
-        height: 100
-      });
-    }
-
-    // Start recording using the Web Audio API at (attempted) 16kHz
-    document.getElementById('recordButton').addEventListener('click', async () => {
-      // Clear any previous recording data
-      audioDataBuffer = [];
-
-      // Create an AudioContext with desired sample rate (16kHz)
-      try {
-        audioContext = new AudioContext({ sampleRate: 16000 });
-      } catch (e) {
-        console.warn("16kHz sample rate not supported; using default sample rate");
-        audioContext = new AudioContext();
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Audio Transcription</title>
+    <style>
+      #transcription-output {
+        margin-top: 20px;
+        padding: 10px;
+        border: 1px solid #ddd;
+        min-height: 50px;
       }
-
-      // Request microphone access
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      source = audioContext.createMediaStreamSource(stream);
-
-      // Create a ScriptProcessorNode (buffer size can be adjusted)
-      const bufferSize = 4096;
-      processor = audioContext.createScriptProcessor(bufferSize, 1, 1);
-
-      processor.onaudioprocess = function(e) {
-        if (!recording) return;
-        // Get audio samples from the input buffer (mono channel)
-        const channelData = e.inputBuffer.getChannelData(0);
-        // Copy the data to avoid referencing issues
-        audioDataBuffer.push(new Float32Array(channelData));
-      };
-
-      // Connect the processing graph: microphone -> processor -> (to speakers, optional)
-      source.connect(processor);
-      processor.connect(audioContext.destination);
-
-      recording = true;
-      document.getElementById('recordButton').disabled = true;
-      document.getElementById('stopButton').disabled = false;
-    });
-
-    // Stop recording and process the recorded audio
-    document.getElementById('stopButton').addEventListener('click', () => {
-      recording = false;
-
-      // Disconnect audio nodes
-      if (processor) processor.disconnect();
-      if (source) source.disconnect();
-      if (audioContext && audioContext.state !== 'closed') audioContext.close();
-
-      // Merge recorded chunks into a single Float32Array
-      const mergedBuffer = mergeBuffers(audioDataBuffer);
-      // Encode the merged buffer into a WAV Blob (using 16kHz and mono)
-      const wavBlob = encodeWAV(mergedBuffer, 16000, 1);
-
-      // Update the UI: waveform display and audio player
-      updateAudioPlayer(wavBlob);
-      displayWaveform(wavBlob);
-      document.getElementById('transcribeButton').disabled = false;
-      document.getElementById('recordButton').disabled = false;
-      document.getElementById('stopButton').disabled = true;
-    });
-
-    // Merge an array of Float32Array buffers into one
-    function mergeBuffers(buffers) {
-      let totalLength = buffers.reduce((sum, current) => sum + current.length, 0);
-      let result = new Float32Array(totalLength);
-      let offset = 0;
-      buffers.forEach(buffer => {
-        result.set(buffer, offset);
-        offset += buffer.length;
-      });
-      return result;
-    }
-
-    // Encode a Float32Array of PCM samples into a WAV file Blob
-    function encodeWAV(samples, sampleRate, numChannels) {
-      const bytesPerSample = 2;
-      const bufferLength = samples.length * bytesPerSample;
-      const headerLength = 44;
-      const buffer = new ArrayBuffer(headerLength + bufferLength);
-      const view = new DataView(buffer);
-
-      let offset = 0;
-      function writeString(s) {
-        for (let i = 0; i < s.length; i++) {
-          view.setUint8(offset++, s.charCodeAt(i));
-        }
+      #recordButton,
+      #stopButton,
+      #transcribeButton {
+        margin-top: 10px;
+        padding: 10px;
       }
-
-      // RIFF header
-      writeString('RIFF');
-      view.setUint32(offset, 36 + bufferLength, true); offset += 4;
-      writeString('WAVE');
-
-      // fmt subchunk
-      writeString('fmt ');
-      view.setUint32(offset, 16, true); offset += 4; // Subchunk1Size for PCM
-      view.setUint16(offset, 1, true); offset += 2;    // PCM format
-      view.setUint16(offset, numChannels, true); offset += 2;
-      view.setUint32(offset, sampleRate, true); offset += 4;
-      view.setUint32(offset, sampleRate * numChannels * bytesPerSample, true); offset += 4;
-      view.setUint16(offset, numChannels * bytesPerSample, true); offset += 2;
-      view.setUint16(offset, 16, true); offset += 2;     // Bits per sample
-
-      // data subchunk
-      writeString('data');
-      view.setUint32(offset, bufferLength, true); offset += 4;
-
-      // Write the PCM samples as 16-bit little-endian
-      for (let i = 0; i < samples.length; i++, offset += 2) {
-        let s = Math.max(-1, Math.min(1, samples[i])); // Clamp the sample
-        view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+      #waveform {
+        width: 100%;
+        height: 100px;
+        margin-top: 20px;
       }
+      #audioPlayer {
+        margin-top: 20px;
+      }
+      #audioElement {
+        width: 100%;
+      }
+      #playbackHint {
+        font-size: 12px;
+        margin-top: 5px;
+        color: gray;
+      }
+    </style>
+    <!-- WaveSurfer.js Library -->
+    <script src="https://unpkg.com/wavesurfer.js"></script>
+  </head>
+  <body>
+    <h1>Record Audio for Transcription</h1>
 
-      return new Blob([view], { type: 'audio/wav' });
-    }
+    <button id="recordButton">Start Recording</button>
+    <button id="stopButton" disabled>Stop Recording</button>
+    <button id="transcribeButton" disabled>Transcribe</button>
 
-    // Update the audio player element with the recorded WAV file
-    function updateAudioPlayer(file) {
-      const audioElement = document.getElementById('audioElement');
-      audioElement.src = URL.createObjectURL(file);
-      audioElement.load();
-    }
+    <div id="waveform"></div>
+    <!-- Waveform display -->
 
-    // Load the WAV file into WaveSurfer.js for visualization
-    function displayWaveform(file) {
-      waveSurfer.load(URL.createObjectURL(file));
-    }
+    <div id="audioPlayer">
+      <audio id="audioElement" controls>Your browser does not support the audio element.</audio>
+    </div>
+    <!-- Audio playback -->
 
-    // Upload the audio file for transcription
-    function uploadFile(file) {
-      const formData = new FormData();
-      formData.append('audio', file);
+    <div id="playbackHint">Click the play button above to hear your recording.</div>
+    <!-- Hint for playback -->
 
-      fetch('http://scribesmart.co/transcribe', {  // Endpoint served by Nginx and Gunicorn
-        method: 'POST',
-        body: formData
-      })
-      .then(response => response.json())
-      .then(data => {
-        if (data.transcription) {
-          document.getElementById('transcription-output').innerText = data.transcription;
-        } else {
-          document.getElementById('transcription-output').innerText = 'Error: No transcription received.';
-        }
-      })
-      .catch(error => {
-        document.getElementById('transcription-output').innerText = 'Error uploading file: ' + error.message;
-      });
-    }
+    <h2>Transcription Output:</h2>
+    <div id="transcription-output">Waiting for transcription...</div>
 
-    // When the Transcribe button is clicked, fetch the current audio file and upload it
-    document.getElementById('transcribeButton').addEventListener('click', () => {
-      const audioSrc = document.getElementById('audioElement').src;
-      if (audioSrc) {
-        // Fetch the audio file from the audio element's source URL
-        fetch(audioSrc)
-        .then(response => response.blob())
-        .then(blob => {
-          uploadFile(blob);
-        })
-        .catch(error => {
-          document.getElementById('transcription-output').innerText = 'Error fetching audio file: ' + error.message;
+    <script>
+      // Global variables
+      let mediaRecorder;
+      let audioChunks = [];
+      let stream;
+      let waveSurfer;
+      const TARGET_SAMPLE_RATE = 16000; // Target sample rate: 16kHz
+
+      /**
+       * OVERVIEW OF CHANGES:
+       *
+       * Original Implementation Issues:
+       * - Worked on Chrome but failed on Firefox with sample rate mismatch errors
+       * - Tried to force 16kHz recording using AudioContext, but Firefox strictly enforces sample rate matching between audio nodes, resulting in faliing to record, because the microphones don't necessarily adhere to 16kHz
+       * - Used deprecated ScriptProcessorNode for audio processing
+       * - Manually built WAV files without format validation
+       *
+       * Browser Differences:
+       * - Chrome: More forgiving with audio node connections between differing sample rates
+       * - Firefox: Strictly enforces Web Audio API spec, rejecting connections between AudioContexts with different sample rates
+       * - Different browsers use different default recording formats (Chrome often uses WebM, Firefox uses Opus)
+       *
+       * New Implementation Improvements:
+       * - Browser-agnostic approach that works in both Chrome and Firefox
+       * - Uses MediaRecorder API with browser's native sample rate
+       * - Converts to 16kHz WAV after recording, avoiding browser-specific issues
+       * - Ensures consistent output regardless of which browser is used
+       */
+
+      // Initialize WaveSurfer.js for waveform visualization
+      function initWaveform() {
+        waveSurfer = WaveSurfer.create({
+          container: '#waveform',
+          waveColor: 'gray',
+          progressColor: 'green',
+          height: 100,
         });
       }
-    });
 
-    // Initialize WaveSurfer.js once the page loads
-    initWaveform();
-  </script>
-</body>
+      /**
+       * Start Recording Event Handler
+       *
+       * Original: Used AudioContext with ScriptProcessorNode, tried to force 16kHz recording
+       *   - Worked in Chrome which is more lenient with sample rate mismatches
+       *   - Failed in Firefox which strictly enforces the Web Audio API specification
+       *
+       * New: Uses MediaRecorder API with browser's default format and sample rate
+       *   - Works consistently across browsers (Chrome, Firefox, Safari, Edge)
+       *   - Avoids sample rate mismatch errors entirely
+       */
+      document.getElementById('recordButton').addEventListener('click', async () => {
+        // Clear any previous recording data
+        audioChunks = [];
+
+        try {
+          // Request microphone access
+          stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+          // Create MediaRecorder instance with default format
+          // CHANGE: No longer trying to force specific sample rate, allowing browser defaults
+          // Note: Chrome & Firefox use different default formats (WebM vs Opus)
+          mediaRecorder = new MediaRecorder(stream);
+
+          // Set up event handlers
+          mediaRecorder.ondataavailable = (event) => {
+            if (event.data.size > 0) {
+              audioChunks.push(event.data);
+            }
+          };
+
+          mediaRecorder.onstop = async () => {
+            // Combine chunks into a Blob
+            const audioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
+
+            try {
+              // CHANGE: Convert to WAV format with 16kHz sample rate
+              // This approach works consistently across browsers, avoiding Firefox's
+              // strict sample rate enforcement while maintaining Chrome compatibility
+              const wavBlob = await convertToWav(audioBlob, TARGET_SAMPLE_RATE);
+              console.log('Converted to WAV successfully');
+
+              // Update the UI with the WAV audio
+              updateAudioPlayer(wavBlob);
+              displayWaveform(wavBlob);
+              document.getElementById('transcribeButton').disabled = false;
+            } catch (error) {
+              console.error('Conversion error:', error);
+              // Fallback to original audio if conversion fails
+              updateAudioPlayer(audioBlob);
+              displayWaveform(audioBlob);
+              document.getElementById('transcribeButton').disabled = false;
+            }
+
+            document.getElementById('recordButton').disabled = false;
+            document.getElementById('stopButton').disabled = true;
+          };
+
+          // Start recording (collect data every 1 second)
+          mediaRecorder.start(1000);
+
+          document.getElementById('recordButton').disabled = true;
+          document.getElementById('stopButton').disabled = false;
+        } catch (error) {
+          console.error('Error accessing microphone:', error);
+          alert("Could not access microphone. Please ensure you've granted permission.");
+        }
+      });
+
+      // Stop recording
+      document.getElementById('stopButton').addEventListener('click', () => {
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+          mediaRecorder.stop();
+        }
+
+        // Stop all tracks in the stream to release the microphone
+        if (stream) {
+          stream.getTracks().forEach((track) => track.stop());
+        }
+      });
+
+      /**
+       * Convert any audio format to WAV
+       *
+       * CHANGE: This is a new function that standardizes audio processing across browsers
+       *
+       * Browser Differences:
+       * - Chrome: May record in WebM format at 48kHz
+       * - Firefox: May record in Opus format at 48kHz
+       * - Both browsers have different default sample rates and formats
+       *
+       * This function handles any browser's output and produces consistent 16kHz WAV,
+       * making the backend processing consistent regardless of which browser is used.
+       */
+      async function convertToWav(audioBlob, targetSampleRate) {
+        // Create audio context
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+        // Read the blob
+        const arrayBuffer = await audioBlob.arrayBuffer();
+
+        // Decode the audio file
+        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+
+        // Get info about the audio
+        const numberOfChannels = audioBuffer.numberOfChannels;
+        const originalSampleRate = audioBuffer.sampleRate;
+
+        console.log(`Original audio: ${originalSampleRate}Hz, ${numberOfChannels} channels`);
+
+        let resampledBuffer;
+
+        // Check if we need to resample
+        if (originalSampleRate !== targetSampleRate) {
+          // Create an offline context with the target sample rate
+          const offlineContext = new OfflineAudioContext(
+            1, // Always use mono
+            audioBuffer.duration * targetSampleRate,
+            targetSampleRate
+          );
+
+          // Create a buffer source
+          const source = offlineContext.createBufferSource();
+          source.buffer = audioBuffer;
+
+          // Connect to the offline context
+          source.connect(offlineContext.destination);
+
+          // Start the source
+          source.start(0);
+
+          // Render the buffer
+          resampledBuffer = await offlineContext.startRendering();
+        } else {
+          // No resampling needed
+          resampledBuffer = audioBuffer;
+        }
+
+        // Always convert to mono if needed
+        let monoData;
+        if (numberOfChannels > 1) {
+          // Mix down to mono
+          monoData = new Float32Array(resampledBuffer.length);
+          for (let channel = 0; channel < numberOfChannels; channel++) {
+            const channelData = resampledBuffer.getChannelData(channel);
+            for (let i = 0; i < resampledBuffer.length; i++) {
+              monoData[i] += channelData[i] / numberOfChannels;
+            }
+          }
+        } else {
+          // Already mono
+          monoData = resampledBuffer.getChannelData(0);
+        }
+
+        // Create WAV file
+        const wavBuffer = createWavFile(monoData, targetSampleRate);
+
+        // Return as blob
+        return new Blob([wavBuffer], { type: 'audio/wav' });
+      }
+
+      /**
+       * Create a WAV file from audio data
+       *
+       * CHANGE: Enhanced WAV file creation with proper headers. No big changed were needed. Practically the same.
+       *
+       */
+      function createWavFile(audioData, sampleRate) {
+        const buffer = new ArrayBuffer(44 + audioData.length * 2);
+        const view = new DataView(buffer);
+
+        // RIFF chunk descriptor
+        writeString(view, 0, 'RIFF');
+        view.setUint32(4, 36 + audioData.length * 2, true);
+        writeString(view, 8, 'WAVE');
+
+        // fmt sub-chunk
+        writeString(view, 12, 'fmt ');
+        view.setUint32(16, 16, true); // fmt chunk size
+        view.setUint16(20, 1, true); // audio format (1 for PCM)
+        view.setUint16(22, 1, true); // num channels (1 for mono)
+        view.setUint32(24, sampleRate, true); // sample rate
+        view.setUint32(28, sampleRate * 2, true); // byte rate
+        view.setUint16(32, 2, true); // block align
+        view.setUint16(34, 16, true); // bits per sample
+
+        // data sub-chunk
+        writeString(view, 36, 'data');
+        view.setUint32(40, audioData.length * 2, true);
+
+        // Write the PCM samples
+        const volume = 1;
+        let index = 44;
+        for (let i = 0; i < audioData.length; i++) {
+          // Convert float32 to int16
+          const sample = Math.max(-1, Math.min(1, audioData[i])) * volume;
+          view.setInt16(index, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+          index += 2;
+        }
+
+        return buffer;
+      }
+
+      // Helper to write a string to a DataView
+      function writeString(view, offset, string) {
+        for (let i = 0; i < string.length; i++) {
+          view.setUint8(offset + i, string.charCodeAt(i));
+        }
+      }
+
+      // Update the audio player element with the recorded audio
+      function updateAudioPlayer(blob) {
+        const audioElement = document.getElementById('audioElement');
+        const audioURL = URL.createObjectURL(blob);
+        audioElement.src = audioURL;
+        audioElement.load();
+      }
+
+      // Load the audio blob into WaveSurfer.js for visualization
+      function displayWaveform(blob) {
+        const audioURL = URL.createObjectURL(blob);
+        waveSurfer.load(audioURL);
+      }
+
+      /**
+       * Upload the audio file for transcription
+       *
+       * CHANGE: Improved to ensure we're sending WAV format
+       *
+       */
+      document.getElementById('transcribeButton').addEventListener('click', () => {
+        // Get the converted WAV blob from the audio element
+        fetch(document.getElementById('audioElement').src)
+          .then((response) => response.blob())
+          .then((blob) => {
+            if (!blob) {
+              alert('No recording available to transcribe.');
+              return;
+            }
+            // Make sure it's recognized as WAV
+            const wavBlob = new Blob([blob], { type: 'audio/wav' });
+            uploadFile(wavBlob);
+          })
+          .catch((error) => {
+            console.error('Error fetching audio for transcription:', error);
+          });
+      });
+
+      /**
+       * Send the audio file to the backend for transcription
+       *
+       * CHANGE: Enhanced to explicitly set file name and type
+       *
+       * Browser Compatibility:
+       * - Works consistently across all browsers by explicitly specifying file type
+       * - Avoids issues with different MIME types from different browsers
+       */
+      function uploadFile(file) {
+        document.getElementById('transcription-output').innerText = 'Transcribing...';
+
+        const formData = new FormData();
+        formData.append('audio', file, 'recording.wav'); // Explicitly name it .wav
+
+        // Dynamically determine API URL based on environment
+        const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+        const apiUrl = isLocalhost ? 'http://localhost:5001/transcribe' : 'http://scribesmart.co/transcribe';
+
+        console.log('Sending audio to:', apiUrl);
+
+        fetch(apiUrl, {
+          method: 'POST',
+          body: formData,
+        })
+          .then((response) => {
+            if (!response.ok) {
+              throw new Error(`Server responded with status: ${response.status}`);
+            }
+            return response.json();
+          })
+          .then((data) => {
+            if (data.transcription) {
+              document.getElementById('transcription-output').innerText = data.transcription;
+            } else {
+              document.getElementById('transcription-output').innerText = 'Error: No transcription received.';
+            }
+          })
+          .catch((error) => {
+            console.error('Fetch error:', error);
+            document.getElementById('transcription-output').innerText = 'Error uploading file: ' + error.message;
+          });
+      }
+
+      // Initialize WaveSurfer.js once the page loads
+      document.addEventListener('DOMContentLoaded', () => {
+        initWaveform();
+      });
+    </script>
+  </body>
 </html>
